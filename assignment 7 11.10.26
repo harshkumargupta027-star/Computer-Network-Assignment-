@@ -1,0 +1,180 @@
+// server code
+
+// UDP Server with runtime roll number
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <ctype.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+// ---------- Service A ----------
+void to_upper(char *s){ for(int i=0;s[i];i++) s[i]=toupper(s[i]); }
+void to_lower(char *s){ for(int i=0;s[i];i++) s[i]=tolower(s[i]); }
+void reverse(char *s){
+    int n=strlen(s);
+    for(int i=0;i<n/2;i++){ char tmp=s[i]; s[i]=s[n-1-i]; s[n-1-i]=tmp; }
+}
+
+// ---------- Service B ----------
+void process_integers(const char *op,int n,int arr[],char *out){
+    int sum=0,max=arr[0],min=arr[0];
+    for(int i=0;i<n;i++){ sum+=arr[i]; if(arr[i]>max)max=arr[i]; if(arr[i]<min)min=arr[i]; }
+    if(strcmp(op,"SUM")==0) sprintf(out,"%d",sum);
+    else if(strcmp(op,"MAX")==0) sprintf(out,"%d",max);
+    else if(strcmp(op,"MIN")==0) sprintf(out,"%d",min);
+    else if(strcmp(op,"AVG")==0) sprintf(out,"%.2f",(double)sum/n);
+    else strcpy(out,"ERROR: Unknown OP");
+}
+
+// ---------- Service C ----------
+void string_stats(const char *text,char *out){
+    int len=strlen(text),v=0,c=0,d=0;
+    for(int i=0;i<len;i++){
+        char ch=tolower(text[i]);
+        if(isdigit(ch)) d++;
+        else if(strchr("aeiou",ch)) v++;
+        else if(isalpha(ch)) c++;
+    }
+    sprintf(out,"LEN=%d;VOWELS=%d;CONSONANTS=%d;DIGITS=%d",len,v,c,d);
+}
+
+int main(int argc,char *argv[]){
+    if(argc!=2){
+        printf("Usage: %s <roll_number>\n",argv[0]);
+        exit(1);
+    }
+
+    char roll[20];
+    strcpy(roll,argv[1]);
+    int last3=atoi(roll+strlen(roll)-3);
+    int port=30000+last3;
+    int sumDigits=(last3/100)+(last3/10%10)+(last3%10);
+    int d=sumDigits%3;
+
+    int sockfd;
+    struct sockaddr_in servaddr,cliaddr;
+    char buffer[1024];
+
+    sockfd=socket(AF_INET,SOCK_DGRAM,0);
+    if(sockfd<0){ perror("socket"); exit(1); }
+
+    memset(&servaddr,0,sizeof(servaddr));
+    servaddr.sin_family=AF_INET;
+    servaddr.sin_addr.s_addr=INADDR_ANY;
+    servaddr.sin_port=htons(port);
+
+    if(bind(sockfd,(struct sockaddr*)&servaddr,sizeof(servaddr))<0){
+        perror("bind"); exit(1);
+    }
+
+    printf("Server running on port %d (Roll=%s, ServiceType=%d)\n",port,roll,d);
+
+    socklen_t len;
+    while(1){
+        len=sizeof(cliaddr);
+        int n=recvfrom(sockfd,buffer,sizeof(buffer)-1,0,(struct sockaddr*)&cliaddr,&len);
+        buffer[n]='\0';
+
+        // Roll check
+        char prefix[30];
+        sprintf(prefix,"%s#",roll);
+        if(strncmp(buffer,prefix,strlen(prefix))!=0){
+            sendto(sockfd,"ERROR: Unauthorized client",26,0,(struct sockaddr*)&cliaddr,len);
+            continue;
+        }
+
+        char *msg=buffer+strlen(prefix);
+        if(strcmp(msg,"EXIT")==0){
+            printf("Exit command received. Shutting down.\n");
+            break;
+        }
+
+        char response[1024];
+        if(d==0){ // Type A
+            if(strncmp(msg,"UP|",3)==0){ strcpy(response,msg+3); to_upper(response); }
+            else if(strncmp(msg,"LOW|",4)==0){ strcpy(response,msg+4); to_lower(response); }
+            else if(strncmp(msg,"REV|",4)==0){ strcpy(response,msg+4); reverse(response); }
+            else strcpy(response,"ERROR: Unknown command");
+        }
+        else if(d==1){ // Type B
+            char op[10]; int n;
+            char *tok=strtok(msg,"|"); if(!tok){ strcpy(response,"ERROR"); goto send; }
+            strcpy(op,tok);
+            tok=strtok(NULL,"|"); if(!tok){ strcpy(response,"ERROR"); goto send; }
+            n=atoi(tok);
+            tok=strtok(NULL,""); if(!tok){ strcpy(response,"ERROR"); goto send; }
+            int arr[100]; int i=0;
+            char *num=strtok(tok," ");
+            while(num && i<n){ arr[i++]=atoi(num); num=strtok(NULL," "); }
+            process_integers(op,n,arr,response);
+        }
+        else if(d==2){ // Type C
+            string_stats(msg,response);
+        }
+
+        send:
+        sendto(sockfd,response,strlen(response),0,(struct sockaddr*)&cliaddr,len);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+
+//client code
+
+// UDP Client with runtime roll number
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <arpa/inet.h>
+
+int main(int argc,char *argv[]){
+    if(argc!=3){
+        printf("Usage: %s <server_ip> <roll_number>\n",argv[0]);
+        exit(1);
+    }
+
+    char roll[20];
+    strcpy(roll,argv[2]);
+    int last3=atoi(roll+strlen(roll)-3);
+    int port=30000+last3;
+
+    int sockfd;
+    struct sockaddr_in servaddr;
+    char buffer[1024];
+
+    sockfd=socket(AF_INET,SOCK_DGRAM,0);
+    if(sockfd<0){ perror("socket"); exit(1); }
+
+    memset(&servaddr,0,sizeof(servaddr));
+    servaddr.sin_family=AF_INET;
+    servaddr.sin_port=htons(port);
+    inet_pton(AF_INET,argv[1],&servaddr.sin_addr);
+
+    while(fgets(buffer,sizeof(buffer),stdin)){
+        buffer[strcspn(buffer,"\n")]='\0';
+        if(strlen(buffer)==0) continue;
+
+        char message[1100];
+        snprintf(message,sizeof(message),"%s#%s",roll,buffer);
+
+        sendto(sockfd,message,strlen(message),0,(struct sockaddr*)&servaddr,sizeof(servaddr));
+
+        if(strcmp(buffer,"EXIT")==0) break;
+
+        int n=recvfrom(sockfd,buffer,sizeof(buffer)-1,0,NULL,NULL);
+        buffer[n]='\0';
+        printf("Server response: %s\n",buffer);
+    }
+
+    close(sockfd);
+    return 0;
+}
+
+
+
