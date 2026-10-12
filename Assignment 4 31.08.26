@@ -10,7 +10,7 @@
 #define BUFFER_SIZE 1024
 
 void find_student(char *id_no, char *response) {
-    FILE *fp = fopen("data.txt", "r");
+    FILE *fp = fopen("students.txt", "r");
     if (fp == NULL) {
         strcpy(response, "Error opening file");
         return;
